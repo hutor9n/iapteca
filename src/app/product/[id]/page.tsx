@@ -3,8 +3,19 @@ import { notFound } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { ProductCard } from '@/components/ProductCard';
 import Image from 'next/image';
+import { Metadata } from 'next';
 
 export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  await connectDB();
+  const med = await MedicationModel.findById((await params).id).lean();
+  if (!med) return { title: 'Препарат не знайдено' };
+  return {
+    title: `${med.name} | iApteca`,
+    description: med.description.slice(0, 160),
+  };
+}
 
 export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
   await connectDB();

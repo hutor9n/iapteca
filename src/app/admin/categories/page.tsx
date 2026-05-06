@@ -14,14 +14,34 @@ export default function CategoriesAdmin() {
   useEffect(() => { load(); }, []);
 
   const add = async () => {
-    const res = await fetch('/api/categories', { method: 'POST', body: JSON.stringify({ name }) });
-    if (res.ok) { toast.success('Додано'); setName(''); load(); }
+    try {
+      const res = await fetch('/api/categories', { method: 'POST', body: JSON.stringify({ name }) });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success('Додано');
+        setName('');
+        load();
+      } else {
+        toast.error(data.error || 'Помилка при додаванні');
+      }
+    } catch {
+      toast.error('Мережева помилка');
+    }
   };
 
   const del = async (id: string) => {
     if (confirm('Видалити?')) {
-      const res = await fetch(`/api/categories/${id}`, { method: 'DELETE' });
-      if (res.ok) load(); else toast.error('Помилка (можливо є товари)');
+      try {
+        const res = await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok) {
+          load();
+        } else {
+          toast.error(data.error || 'Помилка (можливо є товари)');
+        }
+      } catch {
+        toast.error('Мережева помилка');
+      }
     }
   };
 

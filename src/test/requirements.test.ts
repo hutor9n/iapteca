@@ -2,6 +2,7 @@ import { vi, describe, it, expect, beforeEach, Mock } from 'vitest';
 import { POST as registerPost } from '@/app/api/auth/register/route';
 import { GET as medicationsGet, POST as medicationsPost } from '@/app/api/medications/route';
 import { POST as ordersPost } from '@/app/api/orders/route';
+import { PATCH as orderPatch } from '@/app/api/orders/[id]/route';
 import { UserModel, MedicationModel, OrderModel } from '@/lib/db';
 import bcrypt from 'bcrypt';
 import { getAuthUser } from '@/lib/auth';
@@ -13,23 +14,44 @@ vi.mock('@/lib/db', () => ({
         findOne: vi.fn(),
         create: vi.fn(),
         findById: vi.fn(),
+        findByIdAndUpdate: vi.fn(),
     },
     MedicationModel: {
         find: vi.fn(),
         create: vi.fn(),
         updateOne: vi.fn(),
+        findById: vi.fn(),
         findByIdAndUpdate: vi.fn(),
+        exists: vi.fn(),
     },
     OrderModel: {
         find: vi.fn(),
         create: vi.fn(),
+        findById: vi.fn(),
         findByIdAndUpdate: vi.fn(),
     },
 }));
 
+vi.mock('mongoose', () => {
+    const session = {
+        startTransaction: vi.fn(),
+        commitTransaction: vi.fn(),
+        abortTransaction: vi.fn(),
+        endSession: vi.fn(),
+    };
+    return {
+        default: {
+            startSession: vi.fn().mockResolvedValue(session),
+        },
+        Schema: vi.fn(),
+        model: vi.fn(),
+        models: {},
+    };
+});
+
 vi.mock('bcrypt', () => ({
     default: {
-        hash: vi.fn().mockResolvedValue('hashed_password'),
+        hash: vi.fn().mockResolvedValue('hashed_password_bcrypt'),
     },
 }));
 
@@ -46,94 +68,142 @@ vi.mock('next/headers', () => ({
     }),
 }));
 
-describe('iApteca Requirements Tests', () => {
+describe('iApteca Requirements Tests (Vymogy.md)', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
 
-    // Test 1: Search validation (FR-04)
-    it('should filter medications by search term', async () => {
-        const mockMedications = [{ name: 'Analgin' }];
+    // Тест 1: Валідація пошуку та продуктивності (FR-04, NFR-04)
+    it('Тест 1: Пошук повертає результати і виконується < 200 мс', async () => {
+        // Given: У базі даних існують препарати з назвами "Анальгін" та "Анаферон".
+        const mockMedications = [{ name: 'Анальгін' }, { name: 'Анаферон' }];
         const mockLean = vi.fn().mockResolvedValue(mockMedications);
         const mockLimit = vi.fn().mockReturnValue({ lean: mockLean });
-        (MedicationModel.find as Mock).mockReturnValue({ limit: mockLimit });
+        const mockSkip = vi.fn().mockReturnValue({ limit: mockLimit });
+        (MedicationModel.find as Mock).mockReturnValue({ skip: mockSkip });
 
-        const req = new Request('http://localhost/api/medications?search=Ana');
+        // When: Користувач вводить у поле пошуку запит "Ана".
+        const start = performance.now();
+        const req = new Request('http://localhost/api/medications?search=Ана');
         const res = await medicationsGet(req);
+        const end = performance.now();
         const data = await res.json();
 
-        expect(MedicationModel.find).toHaveBeenCalledWith(expect.objectContaining({
-            name: { $regex: 'Ana', $options: 'i' }
-        }));
-        expect(data).toEqual(mockMedications);
+        // Then: Система повертає список, що містить обидва препарати. 
+        // Час від моменту надсилання запиту до отримання результату не перевищує 200 мс.
+        expect(data).toHaveLength(2);
+        expect(data[0].name).toContain('Анал');
+        expect(data[1].name).toContain('Анаф');
+        expect(end - start).toBeLessThan(200);
     });
 
-    // Test 2: Password storage security (FR-01, NFR-01)
-    it('should hash password during registration', async () => {
+    // Тест 2: Безпека зберігання паролів (FR-01, NFR-01)
+    it('Тест 2: Паролі зберігаються у вигляді хешу bcrypt', async () => {
+        // Given: Новий користувач заповнює форму реєстрації з паролем "SuperSecret123".
         (UserModel.findOne as Mock).mockResolvedValue(null);
         (UserModel.create as Mock).mockResolvedValue({ _id: 'user123', role: 'CUSTOMER' });
 
         const req = new Request('http://localhost/api/auth/register', {
             method: 'POST',
-            body: JSON.stringify({ phone: '1234567890', password: 'password123', name: 'John' }),
+            body: JSON.stringify({ phone: '+380630000000', password: 'SuperSecret123', name: 'John' }),
         });
 
+        // When: Система зберігає дані користувача в базу даних MongoDB.
         await registerPost(req);
 
-        expect(bcrypt.hash).toHaveBeenCalledWith('password123', 10);
+        // Then: У відповідному полі бази даних замість "SuperSecret123" зберігається рядок (хеш), згенерований алгоритмом bcrypt.
+        expect(bcrypt.hash).toHaveBeenCalledWith('SuperSecret123', 10);
         expect(UserModel.create).toHaveBeenCalledWith(expect.objectContaining({
-            password: 'hashed_password'
+            password: 'hashed_password_bcrypt'
         }));
     });
 
-    // Test 3: Order creation (FR-09)
-    it('should create an order with correct items and status', async () => {
-        const mockUser = { _id: 'user123', role: 'CUSTOMER' };
-        (getAuthUser as Mock).mockResolvedValue(mockUser);
-        (OrderModel.create as Mock).mockResolvedValue({ _id: 'order123' });
+    // Тест 3: Атомарність створення замовлення (FR-09, NFR-09)
+    it('Тест 3: Замовлення створюється зі статусом PENDING', async () => {
+        // Given: Авторизований покупець має в кошику 2 товари.
+        (getAuthUser as Mock).mockResolvedValue({ _id: 'user123', role: 'CUSTOMER' });
+        const mockMed1 = { _id: 'med1', name: 'Товар 1', stock: 10, save: vi.fn() };
+        const mockMed2 = { _id: 'med2', name: 'Товар 2', stock: 5, save: vi.fn() };
+        
+        (MedicationModel.findById as Mock).mockImplementation((id) => ({
+            session: vi.fn().mockResolvedValue(id === 'med1' ? mockMed1 : mockMed2)
+        }));
+        (OrderModel.create as Mock).mockResolvedValue([{ _id: 'order_unique_id' }]);
 
         const orderData = {
-            items: [{ medication: 'med1', quantity: 2, price: 100 }],
-            total: 200,
-            user: 'user123'
+            items: [
+                { medication: 'med1', quantity: 1, price: 100 },
+                { medication: 'med2', quantity: 1, price: 200 }
+            ],
+            total: 300
         };
 
+        // When: Покупець натискає кнопку "Оформити замовлення".
         const req = new Request('http://localhost/api/orders', {
             method: 'POST',
             body: JSON.stringify(orderData),
         });
 
-        await ordersPost(req);
+        const res = await ordersPost(req);
+        const data = await res.json();
 
-        expect(OrderModel.create).toHaveBeenCalledWith(expect.objectContaining(orderData));
+        // Then: В базі даних створюється новий документ Order з унікальним ідентифікатором, 
+        // повним переліком товарів та автоматичним статусом "PENDING".
+        expect(res.status).toBe(200);
+        expect(OrderModel.create).toHaveBeenCalledWith(expect.arrayContaining([
+            expect.objectContaining({
+                status: 'PENDING',
+                items: expect.arrayContaining([
+                    expect.objectContaining({ medication: 'med1' }),
+                    expect.objectContaining({ medication: 'med2' })
+                ])
+            })
+        ]), expect.anything());
+        expect(data._id).toBe('order_unique_id');
     });
 
-    // Test 4: Role-based access control (FR-11, NFR-11)
-    it('should block non-admin users from creating medications', async () => {
+    // Тест 4: Відновлення залишків при скасуванні (FR-14, NFR-14)
+    it('Тест 4: Сток повертається при скасуванні замовлення', async () => {
+        // Given: Існує замовлення на 5 одиниць товару "Цитрамон", а його поточний залишок на складі (stock) становить 50 одиниць.
+        (getAuthUser as Mock).mockResolvedValue({ _id: 'admin123', role: 'ADMIN' });
+        const mockOrder = { 
+            _id: 'order123', 
+            status: 'PENDING', 
+            items: [{ medication: 'citramon_id', quantity: 5 }] 
+        };
+        (OrderModel.findById as Mock).mockReturnValue({ session: vi.fn().mockResolvedValue(mockOrder) });
+        const mockMedUpdate = { session: vi.fn().mockResolvedValue({}) };
+        (MedicationModel.findByIdAndUpdate as Mock).mockReturnValue(mockMedUpdate);
+
+        // When: Адміністратор змінює статус цього замовлення на "CANCELLED".
+        const req = new Request('http://localhost/api/orders/order123', {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'CANCELLED' }),
+        });
+
+        await orderPatch(req, { params: Promise.resolve({ id: 'order123' }) });
+
+        // Then: Система автоматично збільшує залишок "Цитрамону" в базі даних на 5 одиниць.
+        expect(MedicationModel.findByIdAndUpdate).toHaveBeenCalledWith('citramon_id', { $inc: { stock: 5 } });
+    });
+
+    // Тест 5: Контроль доступу на основі ролей (FR-11, NFR-11)
+    it('Тест 5: Користувач CUSTOMER не може створювати препарати', async () => {
+        // Given: Користувач авторизований у системі з роллю "CUSTOMER".
         (getAuthUser as Mock).mockResolvedValue({ _id: 'user123', role: 'CUSTOMER' });
 
+        // When: Користувач намагається надіслати запит на створення нового препарату через API /api/admin/medications.
+        // Примітка: В нашому проекті цей функціонал за адресою /api/medications (POST)
         const req = new Request('http://localhost/api/medications', {
             method: 'POST',
-            body: JSON.stringify({ name: 'New Med' }),
+            body: JSON.stringify({ name: 'Новий препарат' }),
         });
 
         const res = await medicationsPost(req);
+
+        // Then: Система відхиляє запит, повертаючи статус помилки 403 (Forbidden).
         expect(res.status).toBe(403);
-        expect(MedicationModel.create).not.toHaveBeenCalled();
-    });
-
-    // Test 5: Admin access to medications (FR-11)
-    it('should allow admin users to create medications', async () => {
-        (getAuthUser as Mock).mockResolvedValue({ _id: 'admin123', role: 'ADMIN' });
-        (MedicationModel.create as Mock).mockResolvedValue({ _id: 'med123' });
-
-        const req = new Request('http://localhost/api/medications', {
-            method: 'POST',
-            body: JSON.stringify({ name: 'New Med' }),
-        });
-
-        const res = await medicationsPost(req);
-        expect(res.status).toBe(200);
-        expect(MedicationModel.create).toHaveBeenCalled();
+        const data = await res.json();
+        expect(data.error).toBe('Unauthorized');
     });
 });

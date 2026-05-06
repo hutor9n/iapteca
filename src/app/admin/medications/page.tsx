@@ -24,11 +24,22 @@ export default function MedsAdmin() {
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    const res = await fetch(editId ? `/api/medications/${editId}` : '/api/medications', {
-      method: editId ? 'PATCH' : 'POST',
-      body: JSON.stringify(form)
-    });
-    if (res.ok) { toast.success('Збережено'); setOpen(false); load(); }
+    try {
+      const res = await fetch(editId ? `/api/medications/${editId}` : '/api/medications', {
+        method: editId ? 'PATCH' : 'POST',
+        body: JSON.stringify(form)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success('Збережено');
+        setOpen(false);
+        load();
+      } else {
+        toast.error(data.error || 'Помилка при збереженні');
+      }
+    } catch {
+      toast.error('Мережева помилка');
+    }
   };
 
   const del = async (id: string) => {

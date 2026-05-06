@@ -14,15 +14,22 @@ export default function CheckoutPage() {
 
   const handleOrder = async () => {
     if (!user) return router.push('/login');
-    const res = await fetch('/api/orders', {
-      method: 'POST',
-      body: JSON.stringify({ items: items.map(i => ({ medication: i._id, quantity: i.quantity, price: i.price })), total, user: user._id })
-    });
-    if (res.ok) {
-      toast.success('Замовлення успішно створено');
-      clearCart();
-      router.push('/profile');
-    } else toast.error('Помилка при створенні замовлення');
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        body: JSON.stringify({ items: items.map(i => ({ medication: i._id, quantity: i.quantity, price: i.price })), total, user: user._id })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success('Замовлення успішно створено');
+        clearCart();
+        router.push('/profile');
+      } else {
+        toast.error(data.error || 'Помилка при створенні замовлення');
+      }
+    } catch {
+      toast.error('Сталася мережева помилка');
+    }
   };
 
   if (items.length === 0) return <div className="p-20 text-center opacity-50 font-sans">Кошик порожній</div>;

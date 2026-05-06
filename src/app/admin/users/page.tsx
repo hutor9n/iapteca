@@ -12,8 +12,18 @@ export default function UsersAdmin() {
   useEffect(() => { load(); }, []);
 
   const toggleBan = async (id: string, isBanned: boolean) => {
-    const res = await fetch(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ isBanned: !isBanned }) });
-    if (res.ok) { toast.success('Статус оновлено'); load(); }
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ isBanned: !isBanned }) });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success('Статус оновлено');
+        load();
+      } else {
+        toast.error(data.error || 'Помилка при оновленні статусу');
+      }
+    } catch {
+      toast.error('Мережева помилка');
+    }
   };
 
   return (
@@ -24,7 +34,7 @@ export default function UsersAdmin() {
         <TableBody>
           {users.map(u => (
             <TableRow key={u._id}>
-              <TableCell>{u.phone}</TableCell>
+              <TableCell>{u.phone.replace(/(\+\d{5})\d{4}(\d{3})/, '$1****$2')}</TableCell>
               <TableCell>{u.name || '-'}</TableCell>
               <TableCell className="text-xs font-medium uppercase tracking-wider">{u.role}</TableCell>
               <TableCell className="text-right">

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { connectDB, OrderModel } from '@/lib/db';
+import { connectDB, OrderModel, MedicationModel } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
+import mongoose from 'mongoose';
 
 export async function GET(req: Request) {
   const user = await getAuthUser();
@@ -14,6 +15,42 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: 'Auth' }, { status: 401 });
+  
   await connectDB();
-  return NextResponse.json(await OrderModel.create(await req.json()));
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { items, total } = await req.json();
+    
+    if (!items || items.length === 0) {
+      throw new Error('Кошик порожній');
+    }
+
+    // Update stock and verify availability
+    for (const item of items) {
+      const med = await MedicationModel.findById(item.medication).session(session);
+      if (!med || med.stock < item.quantity) {
+        throw new Error(`Недостатньо товару: ${med?.name || 'невідомий препарат'}`);
+      }
+      med.stock -= item.quantity;
+      await med.save({ session });
+    }
+
+    const order = await OrderModel.create([{
+      user: user._id,
+      items,
+      total,
+      status: 'PENDING'
+    }], { session });
+
+    await session.commitTransaction();
+    return NextResponse.json(order[0]);
+  } catch (error: unknown) {
+    await session.abortTransaction();
+    const message = error instanceof Error ? error.message : 'Failed';
+    return NextResponse.json({ error: message }, { status: 400 });
+  } finally {
+    session.endSession();
+  }
 }

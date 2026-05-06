@@ -6,9 +6,22 @@ export async function GET(req: Request) {
   await connectDB();
   const { searchParams } = new URL(req.url);
   const filter: Record<string, unknown> = { isDeleted: { $ne: true } };
+  
   const search = searchParams.get('search');
   if (search) filter.name = { $regex: search, $options: 'i' };
-  return NextResponse.json(await MedicationModel.find(filter).limit(10).lean());
+  
+  const category = searchParams.get('category');
+  if (category) filter.category = category;
+
+  const page = Number(searchParams.get('page')) || 1;
+  const limit = Number(searchParams.get('limit')) || 10;
+
+  const medications = await MedicationModel.find(filter)
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .lean();
+    
+  return NextResponse.json(medications);
 }
 
 export async function POST(req: Request) {
