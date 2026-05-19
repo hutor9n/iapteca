@@ -68,7 +68,7 @@ vi.mock('next/headers', () => ({
     }),
 }));
 
-describe('iApteca Requirements Tests (Vymogy.md)', () => {
+describe('iApteca Requirements Tests', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
