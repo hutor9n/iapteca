@@ -4,6 +4,7 @@ import { SearchAndFilters } from '@/components/SearchAndFilters';
 import { Pagination } from '@/components/Pagination';
 import { Suspense } from 'react';
 import { Medication } from '@/lib/types';
+import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,10 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   const page = Number(sp.page) || 1;
   const limit = 20;
   const filter: Record<string, unknown> = { isDeleted: { $ne: true } };
-  if (sp.search) filter.name = { $regex: sp.search, $options: 'i' };
+  if (sp.search) {
+    filter.name = { $regex: sp.search, $options: 'i' };
+    logger.info('medications.searched', { query: sp.search });
+  }
   if (sp.category) filter.category = sp.category;
   if (sp.inStock === 'true') filter.stock = { $gt: 0 };
 

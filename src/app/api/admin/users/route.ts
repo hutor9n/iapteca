@@ -1,16 +1,27 @@
 import { NextResponse } from 'next/server';
 import { connectDB, UserModel } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
-
-async function checkAdmin() {
-  const user = await getAuthUser();
-  if (user?.role !== 'ADMIN') throw new Error('Unauthorized');
-}
+import { logger } from '@/lib/logger';
+import { metrics } from '@/lib/metrics';
 
 export async function GET() {
+  const startTime = Date.now();
+  metrics.incrementCounter('http_requests_total', { method: 'GET', path: '/api/admin/users' });
+
   try {
-    await checkAdmin();
+    const user = await getAuthUser();
+    if (user?.role !== 'ADMIN') {
+      logger.warn('admin.access_denied', { user_id: user?._id.toString() || 'unknown', path: '/api/admin/users' });
+      throw new Error('Unauthorized');
+    }
+    
     await connectDB();
-    return NextResponse.json(await UserModel.find().sort({ createdAt: -1 }));
-  } catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 403 }); }
+    const users = await UserModel.find().sort({ createdAt: -1 });
+    
+    metrics.observeHistogram('http_request_duration_ms', Date.now() - startTime, { path: '/api/admin/users' });
+    return NextResponse.json(users);
+  } catch { 
+    metrics.observeHistogram('http_request_duration_ms', Date.now() - startTime, { path: '/api/admin/users' });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 403 }); 
+  }
 }
