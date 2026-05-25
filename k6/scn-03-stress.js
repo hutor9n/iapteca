@@ -9,8 +9,8 @@ export const options = {
     { duration: '1m', target: 0 },
   ],
   thresholds: {
-    http_req_failed: ['rate<0.05'],
-    http_req_duration: ['p(95)<1000'],
+    http_req_failed:   [{ threshold: 'rate<0.05',  abortOnFail: true, delayAbortEval: '10s' }],
+    http_req_duration: [{ threshold: 'p(95)<1000', abortOnFail: true, delayAbortEval: '10s' }],
   },
 };
 
@@ -40,13 +40,16 @@ export default function STRESS() {
 
       check(res, { 'order status 200': (r) => r.status === 200 });
 
-      if (res.status === 200) {
-        http.del(`${BASE_URL}/api/orders`);
-      }
+      http.del(`${BASE_URL}/api/orders`);
     }
 
     http.del(`${BASE_URL}/api/profile`);
   }
 
   sleep(0.5);
+}
+
+export function handleSummary() {
+  http.del(`${BASE_URL}/api/orders`);
+  http.del(`${BASE_URL}/api/profile`);
 }
