@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iapteca-config
+  namespace: iapteca
+  labels:
+    app.kubernetes.io/part-of: iapteca
+data:
+  # Загальні параметри середовища
+  NODE_ENV: "production"
+  PORT: "3000"
+
+  # Назва ReplicaSet та хост MongoDB (internal Service DNS)
+  MONGODB_RS: "rs0"
+  MONGODB_HOST: "mongodb-service.iapteca.svc.cluster.local"
+  MONGODB_PORT: "27017"
+  MONGODB_DB: "iapteca"
+
+  # Внутрішні адреси мікросервісів (для api-gateway)
+  PRODUCT_CATALOG_URL: "http://product-catalog-service.iapteca.svc.cluster.local:3000"
+  ORDER_PROCESSING_URL: "http://order-processing-service.iapteca.svc.cluster.local:3000"
+
+  # Налаштування логування
+  LOG_LEVEL: "info"
+
+  # Next.js standalone не потребує HOSTNAME, але явно виставляємо 0.0.0.0
+  HOSTNAME: "0.0.0.0"
