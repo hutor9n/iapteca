@@ -7,9 +7,6 @@ on:
       - feature/ai-cli-test
       - feature/ai-ide-test
 
-env:
-  DOCKERHUB_TOKEN: dckr_pat_abc123xyz789xyz789xyz789xyz789
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -26,12 +23,12 @@ jobs:
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
-          username: bouncytorch
-          password: ${{ env.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }} # Усуває hardcoded DockerHub username у репозиторії та зменшує ризик підміни/розкриття registry identity.
+          password: ${{ secrets.DOCKERHUB_TOKEN }} # Усуває витік DockerHub PAT з YAML та бере токен лише з GitHub Actions Secrets.
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: bouncytorch/iapteca:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/iapteca:${{ github.sha }} # Усуває mutable floating tag; SHA коміту робить образ унікальним, трасованим і відтворюваним.
