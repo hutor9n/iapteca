@@ -22,7 +22,7 @@ export default function OrdersAdmin() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold flex items-center gap-2"><ClipboardList className="w-6 h-6" /> Замовлення</h1>
       <Table>
-        <TableHeader><TableRow><TableHead>ID</TableHead><TableHead>Сума</TableHead><TableHead>Статус</TableHead><TableHead>Дія</TableHead></TableRow></TableHeader>
+        <TableHeader><TableRow><TableHead>ID</TableHead><TableHead>Сума</TableHead><TableHead>Промокод</TableHead><TableHead>Статус</TableHead><TableHead>Дія</TableHead></TableRow></TableHeader>
         <TableBody>
           {orders.map(o => {
             const status = statusMap[o.status] || { label: o.status, variant: "outline" };
@@ -30,6 +30,7 @@ export default function OrdersAdmin() {
               <TableRow key={o._id}>
                 <TableCell className="font-mono text-xs">#{o._id.slice(-6)}</TableCell>
                 <TableCell>{o.total} ₴</TableCell>
+                <TableCell>{o.promoCode ? `${o.promoCode} (-${o.discount || 0} ₴)` : '—'}</TableCell>
                 <TableCell><Badge variant={status.variant}>{status.label}</Badge></TableCell>
                 <TableCell>
                   <Select value={o.status} onValueChange={v => upStat(o._id, v)}>

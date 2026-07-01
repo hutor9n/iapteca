@@ -26,6 +26,9 @@ export default async function ProfilePage() {
                   <div>
                     <div className="font-medium">Замовлення #{o._id.toString().slice(-6)}</div>
                     <div className="text-sm opacity-70">{new Date(o.createdAt).toLocaleDateString()} — {o.total} ₴</div>
+                    {o.promoCode && o.discount ? (
+                      <div className="text-sm text-green-700">Промокод {o.promoCode}: знижка {o.discount} ₴</div>
+                    ) : null}
                   </div>
                   <Badge variant={status.variant}>{status.label}</Badge>
                 </div>
