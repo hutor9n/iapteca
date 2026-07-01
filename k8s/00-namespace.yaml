@@ -1,0 +1,9 @@
+# Namespace that isolates all iApteca workloads from kube-system and other tenants.
+# Every subsequent manifest targets this namespace via `namespace: iapteca`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: iapteca
+  labels:
+    app.kubernetes.io/part-of: iapteca
+    environment: development

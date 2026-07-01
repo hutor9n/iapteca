@@ -1,0 +1,31 @@
+# Non-sensitive configuration shared across all iApteca workloads.
+# Sensitive values (passwords, secrets) live in 02-secret.yaml instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iapteca-config
+  namespace: iapteca
+  labels:
+    app.kubernetes.io/part-of: iapteca
+data:
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  # Internal DNS name of the MongoDB headless Service (see 03-mongodb.yaml).
+  MONGO_HOST: "mongodb"
+  MONGO_PORT: "27017"
+  MONGO_DB: "iapteca"
+  # Replica set name must match --replSet passed to mongod in 03-mongodb.yaml.
+  MONGO_REPLICA_SET: "rs0"
+  # authSource must be "admin" because users are created in the admin database.
+  MONGO_AUTH_SOURCE: "admin"
+
+  # ── Application ──────────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+  # ── Service ports (used by readiness/liveness probes in each Deployment) ─────
+  APP_PORT: "3000"
+  PRODUCT_CATALOG_PORT: "3001"
+  ORDER_PROCESSING_PORT: "3002"
+
+  # ── Logging ──────────────────────────────────────────────────────────────────
+  LOG_LEVEL: "info"

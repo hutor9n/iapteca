@@ -1,0 +1,159 @@
+# ============================================================================
+# app — Next.js Frontend Deployment + NodePort Service
+# ============================================================================
+# This is the public-facing Next.js 16 application (bouncytorch/iapteca:latest)
+# listening on port 3000.  It handles:
+#   - SSR page rendering (catalog, product pages)
+#   - Auth API routes (/api/auth/*)
+#   - Profile, admin panel API routes
+#   - Proxies catalog reads → product-catalog:3001
+#   - Proxies order writes → order-processing:3002
+#
+# LEAST PRIVILEGE: This pod receives MONGODB_URI (app-user, readWrite)
+#   for auth/profile/admin operations that cannot be delegated to the
+#   specialised microservices.  It does NOT receive root credentials.
+#
+# NodePort is used instead of ClusterIP so that `minikube service app`
+# or `kubectl port-forward` can reach the UI from the host browser.
+# ============================================================================
+
+# ── NodePort Service (accessible via minikube service app -n iapteca) ─────
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: iapteca
+  labels:
+    app: app
+    app.kubernetes.io/part-of: iapteca
+spec:
+  selector:
+    app: app
+  type: NodePort
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      # nodePort 30001 — 30000 is already used by the existing frontend-nodeport
+      # service. Run: minikube service app -n iapteca  to open in browser.
+      nodePort: 30001
+
+---
+# ── Deployment ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: iapteca
+  labels:
+    app: app
+    app.kubernetes.io/part-of: iapteca
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      automountServiceAccountToken: false
+
+      containers:
+        - name: app
+          image: bouncytorch/iapteca:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+
+          env:
+            # ── MongoDB DSN: app-user (readWrite) ─────────────────────────────
+            # Used for: User auth, profile updates, admin CRUD, notification data.
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: iapteca-secrets
+                  key: MONGODB_URI          # app-user (readWrite)
+
+            # ── NextAuth JWT secret ───────────────────────────────────────────
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: iapteca-secrets
+                  key: NEXTAUTH_SECRET
+            # NEXTAUTH_URL must point to the externally reachable URL.
+            # Use $(minikube ip):30000 or replace with your Ingress host.
+            - name: NEXTAUTH_URL
+              value: "http://localhost:3000"
+
+            # ── Downstream service URLs (internal ClusterIP DNS) ──────────────
+            # The Next.js app forwards catalog GET requests to product-catalog,
+            # and order mutations to order-processing.
+            - name: PRODUCT_CATALOG_URL
+              value: "http://product-catalog.iapteca.svc.cluster.local:3001"
+            - name: ORDER_PROCESSING_URL
+              value: "http://order-processing.iapteca.svc.cluster.local:3002"
+
+            # ── ConfigMap values ────────────────────────────────────────────
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NODE_ENV
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: APP_PORT
+            - name: NEXT_TELEMETRY_DISABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NEXT_TELEMETRY_DISABLED
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: LOG_LEVEL
+
+          # ── Resource limits ────────────────────────────────────────────────
+          # Next.js SSR + Node.js server-side rendering is memory-hungry.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # ── Readiness probe ────────────────────────────────────────────────
+          # /api/categories is a cheap DB read, confirms app + DB are up.
+          # Pod is excluded from Service until this passes.
+          readinessProbe:
+            httpGet:
+              path: /api/categories
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+            successThreshold: 1
+
+          # ── Liveness probe ─────────────────────────────────────────────────
+          # Higher initialDelay + failureThreshold to survive cold DB connects
+          # and RS election. 60s + 5×30s = 210s before first kill.
+          livenessProbe:
+            httpGet:
+              path: /api/categories
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5

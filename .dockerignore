@@ -1,0 +1,48 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Dev tooling & CI ─────────────────────────────────────────────────────────
+.github
+.vscode
+.idea
+*.md
+!README.md
+
+# ── Dependencies (re-installed inside the image) ─────────────────────────────
+node_modules
+.pnpm-store
+
+# ── Next.js build artefacts (rebuilt inside the image) ───────────────────────
+.next
+out
+build
+
+# ── Tests & coverage ─────────────────────────────────────────────────────────
+coverage
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+vitest.config.ts
+k6/
+
+# ── Kubernetes & Docker meta ─────────────────────────────────────────────────
+k8s/
+Dockerfile
+.dockerignore
+compose.yml
+
+# ── Secrets & local env (must never enter build context) ─────────────────────
+.env
+.env.*
+*.pem
+*.key
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── TypeScript build info ─────────────────────────────────────────────────────
+*.tsbuildinfo
+next-env.d.ts

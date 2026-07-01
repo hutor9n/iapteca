@@ -1,0 +1,133 @@
+# ============================================================================
+# product-catalog — Deployment + ClusterIP Service
+# ============================================================================
+# Responsibility: Serves GET /api/medications and GET /api/categories.
+#   Read-only workload → receives MONGODB_URI_CATALOG (catalog-reader user,
+#   role = "read" on iapteca DB).  Never receives write credentials.
+#
+# Image reuses bouncytorch/iapteca:latest with PORT env var to distinguish
+# which API routes are active.  In a true microservice split the image would
+# be separate; for this monorepo the same image runs in "catalog" mode.
+# ============================================================================
+
+# ── ClusterIP Service (internal only — not exposed outside the cluster) ────
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-catalog
+  namespace: iapteca
+  labels:
+    app: product-catalog
+    app.kubernetes.io/part-of: iapteca
+spec:
+  selector:
+    app: product-catalog
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+  type: ClusterIP
+
+---
+# ── Deployment ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-catalog
+  namespace: iapteca
+  labels:
+    app: product-catalog
+    app.kubernetes.io/part-of: iapteca
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: product-catalog
+  # Zero-downtime rolling update: never have 0 available pods.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: product-catalog
+    spec:
+      # Do not mount service-account token — this pod needs no k8s API access.
+      automountServiceAccountToken: false
+
+      containers:
+        - name: product-catalog
+          image: bouncytorch/iapteca:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+
+          env:
+            # ── Least-privilege DSN: catalog-reader (read-only) ───────────────
+            # IMPORTANT: MONGODB_URI_CATALOG is intentionally NOT aliased to
+            # MONGODB_URI here, so a code-path that reads MONGODB_URI would
+            # get nothing rather than a privileged connection string.
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: iapteca-secrets
+                  key: MONGODB_URI_CATALOG   # read-only user
+
+            # ── ConfigMap values ────────────────────────────────────────────
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NODE_ENV
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: PRODUCT_CATALOG_PORT
+            - name: NEXT_TELEMETRY_DISABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NEXT_TELEMETRY_DISABLED
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: LOG_LEVEL
+
+          # ── Resource limits ────────────────────────────────────────────────
+          # Read-only service — lower CPU ceiling than order-processing.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # ── Readiness probe ────────────────────────────────────────────────
+          # Uses the /api/medications?limit=1 endpoint (cheap DB read).
+          # Pod is removed from Service load-balancer until this passes.
+          readinessProbe:
+            httpGet:
+              path: /api/medications?limit=1
+              port: 3001
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+            successThreshold: 1
+
+          # ── Liveness probe ─────────────────────────────────────────────────
+          # /api/categories is a reliable 200 endpoint in all build modes.
+          livenessProbe:
+            httpGet:
+              path: /api/categories
+              port: 3001
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5

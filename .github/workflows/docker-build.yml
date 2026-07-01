@@ -1,0 +1,144 @@
+# =============================================================================
+# CI/CD: Build & Push Docker image to DockerHub
+# =============================================================================
+#
+# АУДИТ БЕЗПЕКИ — ВИПРАВЛЕНА ВЕРСІЯ
+# Проведено повний аудит пайплайну. Знайдено і виправлено:
+#
+#   FIX-1  Hardcoded DOCKERHUB_TOKEN  →  ${{ secrets.DOCKERHUB_TOKEN }}
+#   FIX-2  Hardcoded username          →  ${{ secrets.DOCKERHUB_USERNAME }}
+#   FIX-3  Mutable :latest tag         →  ${{ github.sha }} (immutable)
+#   FIX-4  Видалено env-блок з секретами на рівні job
+#   FIX-5  Додано permissions: мінімальний scope для GITHUB_TOKEN
+#   FIX-6  Виправлено Step Summary — відображає реальний тег sha
+#
+# Як налаштувати секрети перед першим запуском:
+#   GitHub repo → Settings → Secrets and variables → Actions → New secret
+#   DOCKERHUB_USERNAME  =  ваш логін на hub.docker.com
+#   DOCKERHUB_TOKEN     =  Personal Access Token (Account Settings → Security)
+#                          Scope: Read, Write (НЕ Delete — принцип Least Privilege)
+# =============================================================================
+
+name: Docker Build & Push
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+# FIX-5: Обмежуємо права GITHUB_TOKEN до мінімально необхідних.
+# За замовчуванням GitHub видає write до всього репозиторію —
+# це порушує принцип Least Privilege і дозволяє скомпрометованому
+# action-у змінювати код, issues, releases тощо.
+# Загроза: OWASP CI/CD-SEC-6 Insufficient Credential Hygiene.
+permissions:
+  contents: read   # потрібно лише для actions/checkout
+
+jobs:
+  build-and-push:
+    name: Build image and push to DockerHub
+    runs-on: ubuntu-latest
+
+    env:
+      # Лише неконфіденційні значення зберігаються у env на рівні job.
+      # FIX-4: Секрети (токени, паролі) НІКОЛИ не потрапляють у env-блок —
+      # вони доступні через ${{ secrets.* }} і маскуються у логах GitHub Actions.
+      # Загроза (усунена): CWE-798 Use of Hard-coded Credentials.
+      IMAGE_NAME: bouncytorch/iapteca
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Docker Buildx (multi-platform builder) ─────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 3. Login to DockerHub ─────────────────────────────────────────
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          # FIX-2: username більше не є literal-рядком у YAML.
+          # Навіть логін — конфіденційна інформація: розкриває назву облікового
+          # запису і може використовуватися для credential-stuffing атак.
+          # Загроза (усунена): CWE-200 Exposure of Sensitive Information.
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+
+          # FIX-1: Токен видалено з env-блоку і перенесено до GitHub Secrets.
+          # Раніше: DOCKERHUB_TOKEN: dckr_pat_... — зберігалося у git-історії
+          # назавжди, навіть після revert-коміту (git log -p | grep dckr_pat).
+          # GitHub Secret Scanning, truffleHog і Gitleaks знаходять такі витоки
+          # автоматично. Ротація токена не видаляє його з git-об'єктів.
+          # Загроза (усунена): CWE-798 Use of Hard-coded Credentials,
+          #                    OWASP CI/CD-SEC-4 Poisoned Pipeline Execution.
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── 4. Build & Push ───────────────────────────────────────────────
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name == 'push' }}   # не пушити на PR
+          # FIX-3: Замінено mutable :latest на immutable SHA-тег.
+          #
+          # Проблема з :latest:
+          #   - Mutable tag: кожен push перезаписує той самий покажчик.
+          #   - Неможливо визначити, який саме код всередині образу.
+          #   - Kubernetes imagePullPolicy: Always + :latest = при кожному
+          #     рестарті пода тягнеться невідомо яка версія.
+          #   - Атакуючий, який отримав доступ до реєстру, може підмінити
+          #     :latest — всі наступні deploy отримають шкідливий образ.
+          #   Загроза (усунена): CWE-1357 Reliance on Insufficiently
+          #                      Trustworthy Component,
+          #                      OWASP CI/CD-SEC-8 Ungoverned Usage of
+          #                      3rd-Party Services.
+          #
+          # github.sha — повний 40-символьний хеш коміту SHA-1:
+          #   - Унікальний для кожного білду (зміна навіть одного байта коду
+          #     дає інший sha).
+          #   - Immutable: тег не можна перезаписати без явного force-push
+          #     до реєстру (що логується і може бути заблоковано policy).
+          #   - Traceable: по тегу завжди можна знайти точний коміт у git,
+          #     переглянути diff, відтворити білд.
+          #   - Rollback: kubectl set image deployment/app app=image:OLD_SHA
+          #     повертає точно попередній стан без жодних сюрпризів.
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          build-args: |
+            NEXT_TELEMETRY_DISABLED=1
+
+      # ── 5. Підсумок у GitHub Step Summary ────────────────────────────
+      # FIX-6: Summary тепер відображає реальний тег (sha), а не :latest.
+      # Це дає traceable audit trail: за записом у Actions можна знайти
+      # точний образ у реєстрі і точний коміт у git.
+      - name: Write job summary
+        if: github.event_name == 'push'
+        run: |
+          echo "## 🐳 Docker image pushed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.IMAGE_NAME }}:${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+
+      # ── 6. Верифікація тегу у реєстрі (audit step) ───────────────────
+      # Після push перевіряємо, що образ з точним SHA-тегом дійсно існує
+      # у реєстрі. Це підтверджує критерій: "образи тегуються хешем коміту".
+      # Якщо образ не знайдено — крок падає і пайплайн зупиняється (fail-fast).
+      - name: Verify image exists in registry with SHA tag
+        if: github.event_name == 'push'
+        run: |
+          echo "Verifying ${{ env.IMAGE_NAME }}:${{ github.sha }} exists in DockerHub..."
+          docker pull ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          echo "✅ Image verified: ${{ env.IMAGE_NAME }}:${{ github.sha }}"

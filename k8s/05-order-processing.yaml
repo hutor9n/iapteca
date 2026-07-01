@@ -1,0 +1,139 @@
+# ============================================================================
+# order-processing — Deployment + ClusterIP Service
+# ============================================================================
+# Responsibility: Handles POST/GET /api/orders, stock decrement, and
+#   order status transitions.
+#
+# LEAST PRIVILEGE: This service receives MONGODB_URI_ORDERS (order-writer user,
+#   role = "readWrite" on iapteca DB).  It intentionally does NOT receive the
+#   catalog-reader DSN or the root credentials.
+#
+# MongoDB transactions are used to atomically decrement stock and create the
+# Order document — replica-set rs0 is required for this.
+# ============================================================================
+
+# ── ClusterIP Service (internal only) ─────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-processing
+  namespace: iapteca
+  labels:
+    app: order-processing
+    app.kubernetes.io/part-of: iapteca
+spec:
+  selector:
+    app: order-processing
+  ports:
+    - name: http
+      port: 3002
+      targetPort: 3002
+  type: ClusterIP
+
+---
+# ── Deployment ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-processing
+  namespace: iapteca
+  labels:
+    app: order-processing
+    app.kubernetes.io/part-of: iapteca
+spec:
+  # Single replica avoids write-ordering race conditions on stock decrement.
+  # Scale out only after horizontal sharding or optimistic-lock retries are
+  # production-hardened.  The current implementation already does 50-retry
+  # exponential back-off for TransientTransactionError (see orders/route.ts).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-processing
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # maxUnavailable: 0 — never kill the current pod before the new one is Ready.
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: order-processing
+    spec:
+      automountServiceAccountToken: false
+
+      containers:
+        - name: order-processing
+          image: bouncytorch/iapteca:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3002
+
+          env:
+            # ── Least-privilege DSN: order-writer (readWrite) ─────────────────
+            # Aliased to MONGODB_URI so that src/lib/db.ts picks it up without
+            # any code changes.  This is the only DSN injected — catalog-reader
+            # and root credentials are NOT present in this pod.
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: iapteca-secrets
+                  key: MONGODB_URI_ORDERS   # readWrite user (order-writer)
+
+            # ── ConfigMap values ────────────────────────────────────────────
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NODE_ENV
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: ORDER_PROCESSING_PORT
+            - name: NEXT_TELEMETRY_DISABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NEXT_TELEMETRY_DISABLED
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: LOG_LEVEL
+
+          # ── Resource limits ────────────────────────────────────────────────
+          # Higher CPU ceiling than catalog — transaction retries are CPU-bound.
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "256Mi"
+            limits:
+              cpu: "750m"
+              memory: "512Mi"
+
+          # ── Readiness probe ────────────────────────────────────────────────
+          # GET /api/orders requires auth → returns 401, not 5xx.
+          # /api/categories is always 200 and confirms server + DB are alive.
+          readinessProbe:
+            httpGet:
+              path: /api/categories
+              port: 3002
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+            successThreshold: 1
+
+          # ── Liveness probe ─────────────────────────────────────────────────
+          # Same endpoint — restart if the process is unresponsive for > 210s
+          # (60s initial + 5 failures × 30s period).
+          livenessProbe:
+            httpGet:
+              path: /api/categories
+              port: 3002
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
