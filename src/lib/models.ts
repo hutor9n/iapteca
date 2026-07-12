@@ -1,5 +1,5 @@
 import { model, models, Schema } from 'mongoose';
-import { User, Medication, Order, OrderItem, Category } from './types';
+import { User, Medication, Order, OrderItem, Category, PromoCode } from './types';
 
 const userSchema = new Schema<User>({
   phone: { type: String, required: true, unique: true },
@@ -33,11 +33,24 @@ const orderItemSchema = new Schema<OrderItem>({
 const orderSchema = new Schema<Order>({
   user: { type: String, required: true },
   items: { type: [orderItemSchema], required: true },
+  subtotal: { type: Number, min: 0 },
+  discount: { type: Number, min: 0, default: 0 },
+  promoCode: { type: String, uppercase: true, trim: true },
   total: { type: Number, required: true, min: 0 },
   status: { type: String, enum: ['PENDING', 'CONFIRMED', 'COMPLETED', 'CANCELLED'], default: 'PENDING' },
 }, { timestamps: true });
+
+const promoCodeSchema = new Schema<PromoCode>({
+  code: { type: String, required: true, unique: true, uppercase: true, trim: true },
+  type: { type: String, enum: ['PERCENT', 'FIXED'], required: true },
+  value: { type: Number, required: true, min: 0 },
+  minOrderTotal: { type: Number, min: 0, default: 0 },
+  expiresAt: { type: Date },
+  isActive: { type: Boolean, default: true },
+}, { timestamps: true, collection: 'promo_codes' });
 
 export const UserModel = models.User || model<User>('User', userSchema);
 export const CategoryModel = models.Category || model<Category>('Category', categorySchema);
 export const MedicationModel = models.Medication || model<Medication>('Medication', medicationSchema);
 export const OrderModel = models.Order || model<Order>('Order', orderSchema);
+export const PromoCodeModel = models.PromoCode || model<PromoCode>('PromoCode', promoCodeSchema);

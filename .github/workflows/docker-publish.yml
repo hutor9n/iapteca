@@ -41,6 +41,8 @@ jobs:
       - name: Log in to DockerHub
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }} # Усуває hardcoded DockerHub username у репозиторії та зменшує ризик підміни/розкриття registry identity.
+          password: ${{ secrets.DOCKERHUB_TOKEN }} # Усуває витік DockerHub PAT з YAML та бере токен лише з GitHub Actions Secrets.
           # SECURITY FIX: username більше не захардкоджений як literal "bouncytorch".
           # Загроза: hardcoded username дозволяє атакуючому визначити цільовий DockerHub-акаунт
           # для credential stuffing або targeted brute-force атак.
@@ -56,6 +58,7 @@ jobs:
         with:
           context: .
           push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/iapteca:${{ github.sha }} # Усуває mutable floating tag; SHA коміту робить образ унікальним, трасованим і відтворюваним.
           # SECURITY FIX: Замінено тег :latest на хеш поточного коміту github.sha.
           # Загроза (усунена): тег :latest є мutable — він перезаписується кожним білдом,
           # що унеможливлює відтворення конкретного деплою та відкриває вектор

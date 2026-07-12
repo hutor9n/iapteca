@@ -5,6 +5,81 @@ import mongoose from 'mongoose';
 import { logger } from '@/lib/logger';
 import { metrics } from '@/lib/metrics';
 
+interface IncomingOrderItem {
+  medication: string;
+  quantity: number;
+  price: number;
+}
+
+interface OrderPricing {
+  promoCode?: string;
+  discount: number;
+  total: number;
+}
+
+interface PromoValidationResponse {
+  valid?: boolean;
+  code?: string;
+  discount?: number;
+  total?: number;
+  error?: string;
+  message?: string;
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeOrderItems(items: unknown): IncomingOrderItem[] {
+  if (!Array.isArray(items) || items.length === 0) throw new Error('Кошик порожній');
+
+  return items.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('Некоректний товар у кошику');
+
+    const record = item as Record<string, unknown>;
+    const medication = typeof record.medication === 'string' ? record.medication : '';
+    const quantity = Number(record.quantity);
+    const price = Number(record.price);
+
+    if (!medication || !Number.isFinite(quantity) || quantity < 1 || !Number.isInteger(quantity)) {
+      throw new Error('Некоректна кількість товару');
+    }
+
+    if (!Number.isFinite(price) || price < 0) {
+      throw new Error('Некоректна ціна товару');
+    }
+
+    return { medication, quantity, price };
+  });
+}
+
+function calculateOrderSubtotal(items: IncomingOrderItem[]) {
+  return roundMoney(items.reduce((sum, item) => sum + item.price * item.quantity, 0));
+}
+
+async function resolvePromoPricing(req: Request, promoCode: unknown, subtotal: number): Promise<OrderPricing> {
+  if (typeof promoCode !== 'string' || promoCode.trim().length === 0) {
+    return { discount: 0, total: subtotal };
+  }
+
+  const res = await fetch(new URL('/api/promocodes/validate', req.url), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: promoCode, subtotal }),
+  });
+  const data = await res.json() as PromoValidationResponse;
+
+  if (!res.ok || !data.valid || data.discount === undefined || data.total === undefined) {
+    throw new Error(data.error || data.message || 'Промокод недійсний');
+  }
+
+  return {
+    promoCode: data.code,
+    discount: data.discount,
+    total: data.total,
+  };
+}
+
 export async function GET(req: Request) {
   const startTime = Date.now();
   metrics.incrementCounter('http_requests_total', { method: 'GET', path: '/api/orders' });
@@ -35,11 +110,25 @@ export async function POST(req: Request) {
 
   await connectDB();
 
-  const { items, total } = await req.json();
+  let items: IncomingOrderItem[];
+  let subtotal: number;
+  let pricing: OrderPricing;
+
+  try {
+    const payload = await req.json();
+    items = normalizeOrderItems(payload.items);
+    subtotal = calculateOrderSubtotal(items);
+    pricing = await resolvePromoPricing(req, payload.promoCode, subtotal);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Некоректне замовлення';
+    metrics.observeHistogram('http_request_duration_ms', Date.now() - startTime, { path: '/api/orders' });
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+
   const MAX_RETRIES = 50;
   let retryCount = 0;
 
-  if (items && items.length === 1) {
+  if (items.length === 1) {
     while (retryCount < MAX_RETRIES) {
       try {
         const item = items[0];
@@ -54,11 +143,14 @@ export async function POST(req: Request) {
         const order = await OrderModel.create({
           user: user._id,
           items,
-          total,
+          subtotal,
+          discount: pricing.discount,
+          promoCode: pricing.promoCode,
+          total: pricing.total,
           status: 'PENDING'
         });
 
-        logger.info('order.created', { user_id: user._id.toString(), order_id: order._id.toString(), total });
+        logger.info('order.created', { user_id: user._id.toString(), order_id: order._id.toString(), total: pricing.total, promo_code: pricing.promoCode });
         metrics.observeHistogram('http_request_duration_ms', Date.now() - startTime, { path: '/api/orders' });
         return NextResponse.json(order);
       } catch (error: unknown) {
@@ -86,10 +178,6 @@ export async function POST(req: Request) {
     session.startTransaction();
 
     try {
-      if (!items || items.length === 0) {
-        throw new Error('Кошик порожній');
-      }
-
       for (const item of items) {
         const med = await MedicationModel.findOneAndUpdate(
           { _id: item.medication, stock: { $gte: item.quantity } },
@@ -103,14 +191,17 @@ export async function POST(req: Request) {
       const order = await OrderModel.create([{
         user: user._id,
         items,
-        total,
+        subtotal,
+        discount: pricing.discount,
+        promoCode: pricing.promoCode,
+        total: pricing.total,
         status: 'PENDING'
       }], { session });
 
       await session.commitTransaction();
       session.endSession();
 
-      logger.info('order.created', { user_id: user._id.toString(), order_id: order[0]._id.toString(), total });
+      logger.info('order.created', { user_id: user._id.toString(), order_id: order[0]._id.toString(), total: pricing.total, promo_code: pricing.promoCode });
       metrics.observeHistogram('http_request_duration_ms', Date.now() - startTime, { path: '/api/orders' });
       return NextResponse.json(order[0]);
     } catch (error: unknown) {

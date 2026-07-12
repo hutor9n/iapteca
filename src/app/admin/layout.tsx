@@ -14,6 +14,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/admin" className="p-2 hover:bg-muted rounded">Статистика</Link>
           <Link href="/admin/medications" className="p-2 hover:bg-muted rounded">Препарати</Link>
           <Link href="/admin/categories" className="p-2 hover:bg-muted rounded">Категорії</Link>
+          <Link href="/admin/promocodes" className="p-2 hover:bg-muted rounded">Промокоди</Link>
           <Link href="/admin/orders" className="p-2 hover:bg-muted rounded">Замовлення</Link>
           <Link href="/admin/users" className="p-2 hover:bg-muted rounded">Користувачі</Link>
           <Link href="/" className="p-2 hover:bg-muted rounded text-blue-600">На сайт</Link>
