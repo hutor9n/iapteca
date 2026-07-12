@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-catalog
+  namespace: iapteca
+  labels:
+    app: product-catalog
+    app.kubernetes.io/name: product-catalog
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: product-catalog
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: product-catalog
+        app.kubernetes.io/name: product-catalog
+        app.kubernetes.io/part-of: iapteca
+    spec:
+      # Забороняємо виконання від root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: product-catalog
+          image: bouncytorch/iapteca:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          env:
+            # Least Privilege: тільки READ-ONLY DSN
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secrets
+                  key: MONGODB_URI_READONLY
+
+            # Загальна конфігурація з ConfigMap
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: NODE_ENV
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: PORT
+            - name: HOSTNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: HOSTNAME
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: iapteca-config
+                  key: LOG_LEVEL
+
+            # Ім'я поди для трейсингу в логах
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          # Resource Limits для Minikube (обмежені ресурси)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # Readiness Probe: перевіряємо /api/medications — ключовий маршрут сервісу
+          readinessProbe:
+            httpGet:
+              path: /api/medications?limit=1
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+
+          # Liveness Probe: перевіряємо /api/metrics — легкий ендпоінт
+          livenessProbe:
+            httpGet:
+              path: /api/metrics
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          # Startup Probe: даємо час на холодний старт Next.js standalone
+          startupProbe:
+            httpGet:
+              path: /api/metrics
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12   # 12 * 5s = 60s максимум на старт
+            timeoutSeconds: 5
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # Next.js standalone пише в tmp
+            capabilities:
+              drop: ["ALL"]
+
+      restartPolicy: Always
+
+      # Розміщуємо репліки на різних нодах (для production)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - product-catalog
+                topologyKey: kubernetes.io/hostname

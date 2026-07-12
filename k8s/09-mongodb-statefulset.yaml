@@ -1,0 +1,281 @@
+###############################################################################
+# 09-mongodb-statefulset.yaml
+# MongoDB 7.0 як StatefulSet з ReplicaSet rs0 для iApteca
+# Відповідає compose.yml: mongo:7.0, replSet=rs0, directConnection=true
+###############################################################################
+
+# PersistentVolumeClaim для даних MongoDB
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-data-pvc
+  namespace: iapteca
+  labels:
+    app: mongodb
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: standard  # Minikube має standard StorageClass за замовчуванням
+
+---
+# Headless Service для StatefulSet (required for stable DNS)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-headless
+  namespace: iapteca
+  labels:
+    app: mongodb
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None   # Headless
+  selector:
+    app: mongodb
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+      protocol: TCP
+
+---
+# ClusterIP Service для доступу мікросервісів до MongoDB
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service
+  namespace: iapteca
+  labels:
+    app: mongodb
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+      protocol: TCP
+
+---
+# StatefulSet для MongoDB
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: iapteca
+  labels:
+    app: mongodb
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: database
+spec:
+  serviceName: mongodb-headless
+  replicas: 1   # Для Minikube: 1 нода. Для production: 3 (PRIMARY + 2 SECONDARY)
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/part-of: iapteca
+    spec:
+      securityContext:
+        runAsNonRoot: false   # MongoDB вимагає root або спеціальний user
+        fsGroup: 999          # mongodb group
+
+      containers:
+        - name: mongodb
+          image: mongo:7.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mongo
+              containerPort: 27017
+              protocol: TCP
+
+          # Запускаємо MongoDB з ReplicaSet (так само як у compose.yml)
+          command:
+            - "mongod"
+            - "--replSet"
+            - "rs0"
+            - "--bind_ip_all"
+            - "--auth"                # Увімкнено автентифікацію (Least Privilege)
+
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secrets
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secrets
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_INITDB_DATABASE
+              value: "iapteca"
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+            - name: mongodb-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+          # Liveness Probe: перевіряємо що mongod відповідає
+          livenessProbe:
+            exec:
+              command:
+                - mongosh
+                - "--quiet"
+                - "--eval"
+                - "db.adminCommand('ping').ok"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 10
+
+          # Readiness Probe: перевіряємо що PRIMARY обраний
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - "--quiet"
+                - "--eval"
+                - |
+                  try {
+                    var s = rs.status();
+                    quit(s.ok && s.members.some(m => m.stateStr === 'PRIMARY') ? 0 : 1);
+                  } catch(e) {
+                    quit(1);
+                  }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 10
+
+          startupProbe:
+            exec:
+              command:
+                - mongosh
+                - "--quiet"
+                - "--eval"
+                - "db.adminCommand('ping').ok"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 24   # 24 * 5s = 120s на старт
+            timeoutSeconds: 10
+
+          securityContext:
+            allowPrivilegeEscalation: false
+
+      volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-data-pvc
+        - name: mongodb-init
+          configMap:
+            name: mongodb-init-scripts
+            defaultMode: 0755
+
+---
+# ConfigMap з init-скриптом для ініціалізації ReplicaSet та створення DB-користувачів
+# Принцип Least Privilege: окремі user для кожного мікросервісу
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-init-scripts
+  namespace: iapteca
+  labels:
+    app: mongodb
+    app.kubernetes.io/part-of: iapteca
+    app.kubernetes.io/component: database
+data:
+  01-init-replicaset.js: |
+    // Ініціалізація ReplicaSet rs0
+    // Запускається автоматично при першому старті MongoDB
+    try {
+      var status = rs.status();
+      print('ReplicaSet already initialized: ' + status.set);
+    } catch (e) {
+      print('Initializing ReplicaSet rs0...');
+      rs.initiate({
+        _id: 'rs0',
+        members: [{ _id: 0, host: 'localhost:27017' }]
+      });
+      // Чекаємо обрання PRIMARY
+      var retries = 30;
+      while (retries-- > 0) {
+        sleep(1000);
+        try {
+          var s = rs.status();
+          if (s.members && s.members.some(m => m.stateStr === 'PRIMARY')) {
+            print('PRIMARY elected!');
+            break;
+          }
+        } catch(e2) { /* continue */ }
+      }
+    }
+
+  02-create-users.js: |
+    // Створення DB-користувачів за принципом Least Privilege
+    // Підключаємось до бази iapteca
+    var db = db.getSiblingDB('iapteca');
+
+    // Переконуємось що колекція існує (MongoDB вимагає)
+    db.createCollection('_init');
+
+    // 1. READ-ONLY user для Product Catalog
+    try {
+      db.dropUser('iapteca_readonly');
+    } catch(e) { /* user не існує */ }
+    db.createUser({
+      user: 'iapteca_readonly',
+      pwd: 'readonly_pass',
+      roles: [{ role: 'read', db: 'iapteca' }]
+    });
+    print('Created user: iapteca_readonly (read)');
+
+    // 2. READ-WRITE user для Order Processing
+    try {
+      db.dropUser('iapteca_readwrite');
+    } catch(e) { /* user не існує */ }
+    db.createUser({
+      user: 'iapteca_readwrite',
+      pwd: 'readwrite_pass',
+      roles: [{ role: 'readWrite', db: 'iapteca' }]
+    });
+    print('Created user: iapteca_readwrite (readWrite)');
+
+    // 3. ADMIN user для API Gateway (auth, sessions, admin panel)
+    try {
+      db.dropUser('iapteca_admin');
+    } catch(e) { /* user не існує */ }
+    db.createUser({
+      user: 'iapteca_admin',
+      pwd: 'admin_pass',
+      roles: [
+        { role: 'readWrite', db: 'iapteca' },
+        { role: 'dbAdmin',   db: 'iapteca' }
+      ]
+    });
+    print('Created user: iapteca_admin (readWrite + dbAdmin)');
+
+    print('All DB users created successfully.');
