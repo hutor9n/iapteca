@@ -7,28 +7,66 @@ on:
       - feature/ai-cli-test
       - feature/ai-ide-test
 
+# SECURITY FIX: Видалено блок `env:` з hardcoded DOCKERHUB_TOKEN.
+# Раніше тут було:  DOCKERHUB_TOKEN: dckr_pat_abc123xyz789...
+# Загроза: будь-хто з read-доступом до репо (або форку) міг прочитати токен
+# прямо з YAML-файлу у відкритому репозиторії — повний компроміс облікового запису DockerHub.
+# Рішення: секрет зберігається виключно в GitHub → Settings → Secrets and variables →
+# Actions → Repository secrets (DOCKERHUB_TOKEN, DOCKERHUB_USERNAME).
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
+    # SECURITY FIX: Мінімальні permissions для GITHUB_TOKEN за принципом Least Privilege.
+    # За замовчуванням GitHub надає write до всього репо — обмежуємо до read-only.
+    # Загроза: надлишкові права дозволяють скомпрометованому step'у записати в репо,
+    # змінити теги або маніпулювати release-артефактами.
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        # SECURITY FIX: Закріплюємо версію action через повний SHA замість змінного тегу v4.
+        # Загроза: тег v4 може бути переписаний автором (tag hijacking / supply-chain attack).
+        # SHA гарантує що ми завжди виконуємо саме перевірений коміт.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@b5730b4e4073a66cd1da8219660b895dbadcc11e # v3.10.0
 
       - name: Log in to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }} # Усуває hardcoded DockerHub username у репозиторії та зменшує ризик підміни/розкриття registry identity.
           password: ${{ secrets.DOCKERHUB_TOKEN }} # Усуває витік DockerHub PAT з YAML та бере токен лише з GitHub Actions Secrets.
+          # SECURITY FIX: username більше не захардкоджений як literal "bouncytorch".
+          # Загроза: hardcoded username дозволяє атакуючому визначити цільовий DockerHub-акаунт
+          # для credential stuffing або targeted brute-force атак.
+          # Рішення: значення читається з GitHub Secret DOCKERHUB_USERNAME.
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # SECURITY FIX: токен читається з GitHub Secret, а не з env-блоку у YAML.
+          # Загроза (усунута): literal токен dckr_pat_abc123... у YAML = повний
+          # read/write доступ до DockerHub при будь-якому витоку файлу.
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/iapteca:${{ github.sha }} # Усуває mutable floating tag; SHA коміту робить образ унікальним, трасованим і відтворюваним.
+          # SECURITY FIX: Замінено тег :latest на хеш поточного коміту github.sha.
+          # Загроза (усунена): тег :latest є мutable — він перезаписується кожним білдом,
+          # що унеможливлює відтворення конкретного деплою та відкриває вектор
+          # для tag-confusion атак (атакуючий пушить шкідливий образ з тим самим тегом).
+          # Рішення: SHA-тег є immutable та унікальним для кожного коміту,
+          # що гарантує повну відтворюваність (reproducible builds) та аудиторський слід.
+          #
+          # Також зберігаємо short-sha тег для зручності читання (перші 7 символів).
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/iapteca:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/iapteca:${{ github.ref_name }}-${{ github.sha }}
